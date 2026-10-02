@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "ST7789.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -40,9 +41,9 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-TIM_HandleTypeDef htim2;
+SPI_HandleTypeDef hspi1;
 
-UART_HandleTypeDef huart1;
+TIM_HandleTypeDef htim2;
 
 /* USER CODE BEGIN PV */
 
@@ -58,14 +59,13 @@ static volatile SystemState_t g_systemState = SYS_STATE_NORMAL;
 #define PWM_MIN_VAL 0
 #define PWM_STEP 15
 #define BREATHING_INTERVAL_MS 20
+#define RESET_HOLD_TIME_MS 1500
 
 
 static volatile uint32_t estop_ms = 0;
 static volatile uint32_t reset_ms = 0;
+static uint32_t reset_start_ms = 0;
 
-static const char MSG_START[] = "System is running .....\r\n";
-static const char MSG_RESET[] = "System is resetting .....\r\n";
-static const char MSG_ERROR[] = "System is erroring .....\r\n";
 
 /* USER CODE END PV */
 
@@ -73,7 +73,7 @@ static const char MSG_ERROR[] = "System is erroring .....\r\n";
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_TIM2_Init(void);
-static void MX_USART1_UART_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -104,13 +104,41 @@ void Breathing_Status(void) {
 	}
 }
 
+void UpdateDisplayState(SystemState_t state) {
+    static SystemState_t last_rendered_state = (SystemState_t)-1;
+
+    if (state != last_rendered_state) {
+        last_rendered_state = state;
+
+        ST7789_FillScreen(ST7789_BLACK);
+
+        switch (state) {
+        case SYS_STATE_NORMAL:
+            ST7789_WriteString(40, 100, "SYSTEM NORMAL", ST7789_GREEN, ST7789_BLACK, 2);
+            ST7789_WriteString(55, 130, "LED BREATHING", ST7789_WHITE, ST7789_BLACK, 1);
+            break;
+
+        case SYS_STATE_LOCKED:
+            ST7789_WriteString(40, 100, "SYSTEM LOCKED", ST7789_RED, ST7789_BLACK, 2);
+            ST7789_WriteString(45, 130, "EMERGENCY STOP", ST7789_YELLOW, ST7789_BLACK, 1);
+            break;
+
+        case SYS_STATE_RESETING:
+            ST7789_WriteString(40, 100, "SYSTEM RESET", ST7789_YELLOW, ST7789_BLACK, 2);
+            ST7789_WriteString(50, 130, "RESTARTING...", ST7789_WHITE, ST7789_BLACK, 1);
+            break;
+        }
+    }
+}
+
 void ProcessSystem(void) {
 	static uint8_t lock_msg_sent = 0;
 	static uint8_t first_run = 1;
 	if(first_run) {
-		HAL_UART_Transmit(&huart1, (uint8_t*)MSG_START, sizeof(MSG_START) - 1, 100);
 		first_run = 0;
 	}
+
+	UpdateDisplayState(g_systemState);
 
 	switch(g_systemState)
 	{
@@ -118,19 +146,16 @@ void ProcessSystem(void) {
 		__HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
 		if(!lock_msg_sent) {
 			lock_msg_sent = 1;
-			HAL_UART_Transmit(&huart1, (uint8_t*)MSG_ERROR, sizeof(MSG_ERROR) - 1, 100);
 		}
 		break;
 	case SYS_STATE_RESETING:
-		HAL_UART_Transmit(&huart1, (uint8_t*)MSG_RESET, sizeof(MSG_RESET) - 1, 100);
 
 		__disable_irq();
-		if(g_systemState == SYS_STATE_RESETING){
+		if(g_systemState == SYS_STATE_RESETING && HAL_GetTick() - reset_start_ms >= RESET_HOLD_TIME_MS){
 			g_systemState = SYS_STATE_NORMAL;
 		}
 		__enable_irq();
 
-		HAL_UART_Transmit(&huart1, (uint8_t*)MSG_START, sizeof(MSG_START) - 1, 100);
 		lock_msg_sent = 0;
 		break;
 	case SYS_STATE_NORMAL:
@@ -171,9 +196,14 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_TIM2_Init();
-  MX_USART1_UART_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+
+  ST7789_Init();
+  ST7789_FillScreen(ST7789_BLACK);
+  ST7789_WriteString(30, 100, "SYSTEM NORMAL", ST7789_GREEN, ST7789_BLACK, 2);
+
 
   /* USER CODE END 2 */
 
@@ -227,6 +257,44 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
 /**
@@ -289,39 +357,6 @@ static void MX_TIM2_Init(void)
 }
 
 /**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -336,12 +371,33 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOA, TFT_RESET_Pin|TFT_CS_Pin, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(TFT_DC_GPIO_Port, TFT_DC_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : PA1 PA2 */
   GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_2;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : TFT_RESET_Pin TFT_CS_Pin */
+  GPIO_InitStruct.Pin = TFT_RESET_Pin|TFT_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : TFT_DC_Pin */
+  GPIO_InitStruct.Pin = TFT_DC_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+  HAL_GPIO_Init(TFT_DC_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI1_IRQn, 0, 0);
@@ -372,6 +428,7 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 			reset_ms = now;
 			if(g_systemState == SYS_STATE_LOCKED){
 				g_systemState = SYS_STATE_RESETING;
+				reset_start_ms = now;
 			}
 		}
 	}
